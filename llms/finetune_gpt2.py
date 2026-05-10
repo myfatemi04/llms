@@ -49,6 +49,88 @@ def load_dataset(tokenizer):
     return train, val
 
 
+@torch.no_grad()
+def validate(model, tokenizer, val_dataloader):
+    # Generate up to 128 tokens for each prompt in the validation set.
+    # Furthermore, compute perplexity of text. Samples with a temperature
+    # of 0.7.
+
+    result = {"val_loss": 0.0, "instruction": [], "completion": []}
+
+    for batch in val_dataloader:
+        #### Validation Loss ####
+        tokenized = tokenizer(
+            batch["text"],
+            padding=True,
+            truncation=True,
+            max_length=512,
+            return_tensors="pt",
+            return_length=True,
+        ).to(model.device)
+
+        # print("=== Text ===")
+        # print(batch["text"][0])
+        # print()
+        # print("=== Instruction ===")
+        # print(batch["instruction"][0])
+        # print()
+        # print("=== Input ===")
+        # print(batch["input"][0])
+        # print()
+        # print("=== Output ===")
+        # print(batch["output"][0])
+        # print()
+
+        logits = model(**tokenized)["logits"][:, :-1].contiguous()
+        targets = tokenized["input_ids"][:, 1:].contiguous()
+
+        loss = torch.nn.functional.cross_entropy(
+            logits.view(-1, logits.size(-1)),
+            targets.view(-1),
+            ignore_index=tokenizer.pad_token_id,
+        )
+
+        result["val_loss"] += loss.item()
+
+        #### Generation Quality ####
+        model.eval()
+        for instruction in batch["instruction"]:
+            prompt_text = "Below is an instruction that describes a task. Write a response that appropriately completes the request.\n\n### Instruction:\n{}\n\n### Response:".format(
+                instruction
+            )
+            prompt_input = tokenizer([prompt_text], return_tensors="pt")
+
+            generated = model.generate(
+                prompt_input["input_ids"].to(model.device),
+                max_new_tokens=128,
+                do_sample=True,
+                temperature=0.7,
+            )
+            # Decode generated tokens to text
+            generated_text = tokenizer.batch_decode(generated, skip_special_tokens=True)
+
+            result["instruction"].append(instruction)
+            result["completion"].append(generated_text[0][len(prompt_text) :])
+
+            # print("=== Prompt ===")
+            # print(prompt_text)
+            # print()
+
+            # print("=== Generated Text ===")
+            # print(generated_text[0])
+
+            # print("=== Example Response ===")
+            # print(batch["output"][0])
+            # print()
+
+        model.train()
+        break
+
+    result["val_loss"] /= len(result["completion"])
+
+    return result
+
+
 def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     tokenizer = transformers.AutoTokenizer.from_pretrained("gpt2-medium")
@@ -64,9 +146,27 @@ def main():
     # Create DataLoader.
     batch_size = 8
     dataloader = torch.utils.data.DataLoader(train, batch_size=batch_size, shuffle=True)
+    val_dataloader = torch.utils.data.DataLoader(val, batch_size=batch_size)
     t0 = time.time()
 
     for epoch in range(10):
+        # Run validation step. Do before training loop so we see what the results looked like
+        # before we did any fine-tuning.
+        val_result = validate(model, tokenizer, val_dataloader)
+
+        wandb.log(
+            {"val_loss": val_result["val_loss"] / len(val_dataloader), "epoch": epoch}
+        )
+
+        # Create table
+        table = wandb.Table(columns=["instruction", "completion"])
+        for instruction, completion in zip(
+            val_result["instruction"], val_result["completion"]
+        ):
+            table.add_data(instruction, completion)
+
+        wandb.log({"validation_generations": table, "epoch": epoch})
+
         for batch in dataloader:
             # batch = {
             #     "input_ids": torch.stack(batch["input_ids"], dim=-1).to(device),
@@ -100,6 +200,7 @@ def main():
                 {
                     "loss": loss.item(),
                     "elapsed_time": time.time() - t0,
+                    "epoch": epoch,
                 }
             )
             optim.zero_grad()
