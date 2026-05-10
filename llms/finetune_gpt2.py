@@ -8,6 +8,7 @@ import datasets
 import time
 import torch.utils.data
 import torch
+import wandb
 
 
 def encode(examples, tokenizer):
@@ -58,42 +59,52 @@ def main():
 
     train, val = load_dataset(tokenizer)
 
+    wandb.init(project="finetune-gpt2", name="gpt2-medium-alpaca")
+
     # Create DataLoader.
-    dataloader = torch.utils.data.DataLoader(train, batch_size=8, shuffle=True)
+    batch_size = 8
+    dataloader = torch.utils.data.DataLoader(train, batch_size=batch_size, shuffle=True)
+    t0 = time.time()
 
-    for batch in dataloader:
-        # batch = {
-        #     "input_ids": torch.stack(batch["input_ids"], dim=-1).to(device),
-        #     "attention_mask": torch.stack(batch["attention_mask"], dim=-1).to(device),
-        # }
-        # print(batch["input_ids"].shape, batch["attention_mask"].shape)
+    for epoch in range(10):
+        for batch in dataloader:
+            # batch = {
+            #     "input_ids": torch.stack(batch["input_ids"], dim=-1).to(device),
+            #     "attention_mask": torch.stack(batch["attention_mask"], dim=-1).to(device),
+            # }
+            # print(batch["input_ids"].shape, batch["attention_mask"].shape)
 
-        batch = tokenizer(
-            batch["text"],
-            padding=True,
-            truncation=True,
-            max_length=512,
-            return_tensors="pt",
-            return_length=True,
-        ).to(device)
+            batch = tokenizer(
+                batch["text"],
+                padding=True,
+                truncation=True,
+                max_length=512,
+                return_tensors="pt",
+                return_length=True,
+            ).to(device)
 
-        # First token's logit should target the second token
-        logits = model(**batch)["logits"][:, :-1].contiguous()
-        targets = batch["input_ids"][:, 1:].contiguous()
+            # First token's logit should target the second token
+            logits = model(**batch)["logits"][:, :-1].contiguous()
+            targets = batch["input_ids"][:, 1:].contiguous()
 
-        # b1 = torch.arange(batch["input_ids"].size(0))
-        # b2 = batch["length"] - 1
-        # print(b1.shape, b2.shape)
-        # targets[b1, b2:] = -100
-        loss = torch.nn.functional.cross_entropy(
-            logits.view(-1, logits.size(-1)),
-            targets.view(-1),
-            ignore_index=tokenizer.pad_token_id,
-        )
-        print(loss.item())
-        optim.zero_grad()
-        loss.backward()
-        optim.step()
+            # b1 = torch.arange(batch["input_ids"].size(0))
+            # b2 = batch["length"] - 1
+            # print(b1.shape, b2.shape)
+            # targets[b1, b2:] = -100
+            loss = torch.nn.functional.cross_entropy(
+                logits.view(-1, logits.size(-1)),
+                targets.view(-1),
+                ignore_index=tokenizer.pad_token_id,
+            )
+            wandb.log(
+                {
+                    "loss": loss.item(),
+                    "elapsed_time": time.time() - t0,
+                }
+            )
+            optim.zero_grad()
+            loss.backward()
+            optim.step()
 
 
 if __name__ == "__main__":
