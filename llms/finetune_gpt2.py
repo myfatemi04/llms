@@ -35,7 +35,7 @@ def load_dataset(tokenizer):
         print("Time taken to encode the dataset: ", t1 - t0, " seconds")
 
         # Save encoded dataset to disk
-        dataset.save_to_disk("scratch/alpaca_dataset_encoded")
+        dataset.save_to_disk("scratch/alpaca_dataset_encoded")  # type: ignore
     else:
         dataset = datasets.load_from_disk("scratch/alpaca_dataset_encoded")
 
@@ -126,8 +126,6 @@ def validate(model, tokenizer, val_dataloader):
         model.train()
         break
 
-    result["val_loss"] /= len(result["completion"])
-
     return result
 
 
@@ -136,7 +134,7 @@ def main():
     tokenizer = transformers.AutoTokenizer.from_pretrained("gpt2-medium")
     tokenizer.pad_token = tokenizer.eos_token
 
-    model = transformers.AutoModelForCausalLM.from_pretrained("gpt2-medium").to(device)
+    model = transformers.AutoModelForCausalLM.from_pretrained("gpt2-medium").to(device)  # type: ignore
     optim = torch.optim.Adam(model.parameters(), lr=1e-3)
 
     train, val = load_dataset(tokenizer)
@@ -145,9 +143,11 @@ def main():
 
     # Create DataLoader.
     batch_size = 8
-    dataloader = torch.utils.data.DataLoader(train, batch_size=batch_size, shuffle=True)
-    val_dataloader = torch.utils.data.DataLoader(val, batch_size=batch_size)
+    dataloader = torch.utils.data.DataLoader(train, batch_size=batch_size, shuffle=True)  # type: ignore
+    val_dataloader = torch.utils.data.DataLoader(val, batch_size=batch_size)  # type: ignore
     t0 = time.time()
+
+    IGNORE_INDEX = -100
 
     for epoch in range(10):
         # Run validation step. Do before training loop so we see what the results looked like
@@ -159,21 +159,19 @@ def main():
         )
 
         # Create table
-        table = wandb.Table(columns=["instruction", "completion"])
+        table = wandb.Table(
+            columns=["epoch", "instruction", "completion"], log_mode="INCREMENTAL"
+        )
         for instruction, completion in zip(
             val_result["instruction"], val_result["completion"]
         ):
-            table.add_data(instruction, completion)
+            table.add_data(epoch, instruction, completion)
 
         wandb.log({"validation_generations": table, "epoch": epoch})
 
+        count = 0
         for batch in dataloader:
-            # batch = {
-            #     "input_ids": torch.stack(batch["input_ids"], dim=-1).to(device),
-            #     "attention_mask": torch.stack(batch["attention_mask"], dim=-1).to(device),
-            # }
-            # print(batch["input_ids"].shape, batch["attention_mask"].shape)
-
+            count += 1
             batch = tokenizer(
                 batch["text"],
                 padding=True,
@@ -185,16 +183,16 @@ def main():
 
             # First token's logit should target the second token
             logits = model(**batch)["logits"][:, :-1].contiguous()
-            targets = batch["input_ids"][:, 1:].contiguous()
+            targets = batch["input_ids"][:, 1:].contiguous().clone()
 
-            # b1 = torch.arange(batch["input_ids"].size(0))
-            # b2 = batch["length"] - 1
-            # print(b1.shape, b2.shape)
-            # targets[b1, b2:] = -100
+            for i in range(batch["input_ids"].size(0)):
+                length = batch["length"][i]
+                targets[i, length - 1 :] = IGNORE_INDEX
+
             loss = torch.nn.functional.cross_entropy(
                 logits.view(-1, logits.size(-1)),
                 targets.view(-1),
-                ignore_index=tokenizer.pad_token_id,
+                ignore_index=IGNORE_INDEX,
             )
             wandb.log(
                 {
@@ -206,6 +204,12 @@ def main():
             optim.zero_grad()
             loss.backward()
             optim.step()
+
+            if count > 500:
+                break
+
+        # Save model checkpoint after each epoch
+        model.save_pretrained(f"checkpoints/gpt2-medium-alpaca-epoch-{epoch}")
 
 
 if __name__ == "__main__":
