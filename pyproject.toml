@@ -5,10 +5,23 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "datasets>=4.8.5",
+    "datasets",
     "matplotlib>=3.10.9",
-    "numpy>=2.4.4",
+    "numpy",
     "pandas>=3.0.2",
     "torch>=2.11.0",
     "transformers>=5.8.0",
 ]
+
+[tool.uv.sources]
+
+# Switch depending on the desired CUDA version.
+torch = { index = "pytorch_cu128" }
+
+[[tool.uv.index]]
+name = "pytorch_cu128"
+url = "https://download.pytorch.org/whl/cu128"
+
+[[tool.uv.index]]
+name = "pytorch_cu130"
+url = "https://download.pytorch.org/whl/cu130"
