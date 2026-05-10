@@ -14,9 +14,11 @@ def encode(examples, tokenizer):
     return tokenizer(
         examples["text"],
         truncation=True,
-        padding="max_length",
+        # padding="max_length",
+        padding=True,
         max_length=512,
         return_tensors="pt",
+        return_length=True,
     )
 
 
@@ -37,6 +39,7 @@ def load_dataset(tokenizer):
         dataset = datasets.load_from_disk("scratch/alpaca_dataset_encoded")
 
     # Split into 5% validation
+    # dataset = datasets.load_dataset("tatsu-lab/alpaca", split="train")
     dataset = dataset.train_test_split(test_size=0.05)  # type: ignore
 
     train = dataset["train"]
@@ -51,24 +54,46 @@ def main():
     tokenizer.pad_token = tokenizer.eos_token
 
     model = transformers.AutoModelForCausalLM.from_pretrained("gpt2-medium").to(device)
+    optim = torch.optim.Adam(model.parameters(), lr=1e-3)
 
     train, val = load_dataset(tokenizer)
-
-    # print("Train sample:")
-    # print(train[0])
-
-    # print("Validation sample:")
-    # print(val[0])
 
     # Create DataLoader.
     dataloader = torch.utils.data.DataLoader(train, batch_size=8, shuffle=True)
 
     for batch in dataloader:
-        batch = {k: torch.tensor(v, device=device) for k, v in batch.items()}
-        print(batch.keys())
-        prediction = model(**batch)
-        print(prediction.keys())
-        break
+        # batch = {
+        #     "input_ids": torch.stack(batch["input_ids"], dim=-1).to(device),
+        #     "attention_mask": torch.stack(batch["attention_mask"], dim=-1).to(device),
+        # }
+        # print(batch["input_ids"].shape, batch["attention_mask"].shape)
+
+        batch = tokenizer(
+            batch["text"],
+            padding=True,
+            truncation=True,
+            max_length=512,
+            return_tensors="pt",
+            return_length=True,
+        ).to(device)
+
+        # First token's logit should target the second token
+        logits = model(**batch)["logits"][:, :-1].contiguous()
+        targets = batch["input_ids"][:, 1:].contiguous()
+
+        # b1 = torch.arange(batch["input_ids"].size(0))
+        # b2 = batch["length"] - 1
+        # print(b1.shape, b2.shape)
+        # targets[b1, b2:] = -100
+        loss = torch.nn.functional.cross_entropy(
+            logits.view(-1, logits.size(-1)),
+            targets.view(-1),
+            ignore_index=tokenizer.pad_token_id,
+        )
+        print(loss.item())
+        optim.zero_grad()
+        loss.backward()
+        optim.step()
 
 
 if __name__ == "__main__":
